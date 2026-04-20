@@ -26,6 +26,11 @@ import java.text.NumberFormat
 
 @Composable
 internal fun ColumnScope.ReadingModePage(viewModel: ReaderSettingsViewModel) {
+    CheckboxItem(
+        label = stringResource(MR.strings.pref_auto_cache_reader_chapters),
+        pref = viewModel.preferences.autoCacheReaderChapters,
+    )
+
     HeadingItem(MR.strings.pref_category_for_this_series)
     val manga by viewModel.mangaFlow.collectAsState()
 
