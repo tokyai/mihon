@@ -1,0 +1,280 @@
+name: Build & Release (Test Key)
+
+# 用「测试/debug 签名 key」构建 release（生产配置：混淆 + 资源压缩）并发布到 GitHub Releases。
+# 原理：app/build.gradle.kts 中 release.signingConfig = debug.signingConfig，
+# 且 MIHON_GITHUB_RELEASE=true 时用 storeFile/storePassword/keyAlias/keyPassword 覆盖 debug signingConfig。
+# 这里不依赖任何 secret，直接在 runner 上用 keytool 现场生成标准 Android debug keystore。
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag，例如 v0.20.4。留空则自动生成 v<versionName>-<short sha>'
+        required: false
+        type: string
+      build_foss:
+        description: '同时构建 FOSS 变体（无 telemetry）'
+        required: false
+        default: true
+        type: boolean
+      draft:
+        description: '创建为草稿 Release'
+        required: false
+        default: false
+        type: boolean
+      prerelease:
+        description: '标记为预发布版本'
+        required: false
+        default: false
+        type: boolean
+      overwrite:
+        description: '若同名 Release 已存在则删除重建'
+        required: false
+        default: true
+        type: boolean
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # 让 app/build.gradle.kts 走「环境变量覆盖 debug signingConfig」分支
+  MIHON_GITHUB_RELEASE: 'true'
+  # Android 标准 debug keystore 参数（测试 key）
+  SIGN_STORE_PASSWORD: android
+  SIGN_KEY_ALIAS: androiddebugkey
+  SIGN_KEY_PASSWORD: android
+
+jobs:
+  prepare:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version_name: ${{ steps.meta.outputs.version_name }}
+      version_code: ${{ steps.meta.outputs.version_code }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve tag and version
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -e
+          version_name=$(grep -m1 'versionName = ' app/build.gradle.kts | sed -E 's/.*"(.*)".*/\1/')
+          version_code=$(grep -m1 'versionCode = ' app/build.gradle.kts | grep -oE '[0-9]+')
+          if [ "$EVENT_NAME" = "push" ]; then
+            tag="$GITHUB_REF_NAME"
+          elif [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="v${version_name}-$(git rev-parse --short HEAD)"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
+          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
+          echo "Tag: $tag / versionName: $version_name / versionCode: $version_code"
+
+  build:
+    name: Build release APKs
+    runs-on: ubuntu-latest
+    needs: prepare
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version-file: .github/.java-version
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
+      - name: Generate test (debug) signing key
+        run: |
+          set -e
+          keytool -genkeypair -v \
+            -keystore "${{ runner.temp }}/debug.keystore" \
+            -storetype pkcs12 \
+            -storepass "$SIGN_STORE_PASSWORD" \
+            -keypass "$SIGN_KEY_PASSWORD" \
+            -alias "$SIGN_KEY_ALIAS" \
+            -keyalg RSA -keysize 2048 -validity 10950 \
+            -dname "CN=Android Debug,O=Android,C=US"
+          keytool -list -v -keystore "${{ runner.temp }}/debug.keystore" -storepass "$SIGN_STORE_PASSWORD"
+
+      - name: Build release variant
+        run: ./gradlew assembleRelease -Pdist=ci --stacktrace
+        env:
+          storeFile: ${{ runner.temp }}/debug.keystore
+          storePassword: ${{ env.SIGN_STORE_PASSWORD }}
+          keyAlias: ${{ env.SIGN_KEY_ALIAS }}
+          keyPassword: ${{ env.SIGN_KEY_PASSWORD }}
+
+      - name: Verify signature
+        run: |
+          set -e
+          apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | head -n1 || true)
+          if [ -z "$apksigner" ]; then
+            echo "apksigner not found, skip verification"
+            exit 0
+          fi
+          "$apksigner" verify --print-certs app/build/outputs/apk/release/app-universal-release.apk
+
+      - name: Rename APKs
+        run: |
+          set -e
+          tag="${{ needs.prepare.outputs.tag }}"
+          cd app/build/outputs/apk/release
+          mv app-universal-release.apk "mihon-$tag.apk"
+          mv app-arm64-v8a-release.apk "mihon-arm64-v8a-$tag.apk"
+          mv app-armeabi-v7a-release.apk "mihon-armeabi-v7a-$tag.apk"
+          mv app-x86-release.apk "mihon-x86-$tag.apk"
+          mv app-x86_64-release.apk "mihon-x86_64-$tag.apk"
+          sha256sum mihon-*.apk > "sha256-$tag.txt"
+          cat "sha256-$tag.txt"
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mihon-apks
+          path: app/build/outputs/apk/release/mihon-*.apk
+          if-no-files-found: error
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mihon-checksums
+          path: app/build/outputs/apk/release/sha256-*.txt
+          if-no-files-found: error
+
+  build_foss:
+    name: Build FOSS APK
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_foss }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version-file: .github/.java-version
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
+      - name: Generate test (debug) signing key
+        run: |
+          set -e
+          keytool -genkeypair -v \
+            -keystore "${{ runner.temp }}/debug.keystore" \
+            -storetype pkcs12 \
+            -storepass "$SIGN_STORE_PASSWORD" \
+            -keypass "$SIGN_KEY_PASSWORD" \
+            -alias "$SIGN_KEY_ALIAS" \
+            -keyalg RSA -keysize 2048 -validity 10950 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Build FOSS variant
+        run: ./gradlew assembleFoss -Pdist=foss --stacktrace
+        env:
+          storeFile: ${{ runner.temp }}/debug.keystore
+          storePassword: ${{ env.SIGN_STORE_PASSWORD }}
+          keyAlias: ${{ env.SIGN_KEY_ALIAS }}
+          keyPassword: ${{ env.SIGN_KEY_PASSWORD }}
+
+      - name: Rename APK
+        run: |
+          set -e
+          mv app/build/outputs/apk/foss/app-universal-foss.apk "mihon-${{ needs.prepare.outputs.tag }}-foss.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mihon-foss
+          path: mihon-*-foss.apk
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [prepare, build, build_foss]
+    if: ${{ always() && needs.prepare.result == 'success' && needs.build.result == 'success' && (needs.build_foss.result == 'success' || needs.build_foss.result == 'skipped') }}
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: mihon-*
+          merge-multiple: true
+
+      - name: Delete artifacts
+        uses: geekyeggo/delete-artifact@176a747ab7e287e3ff4787bf8a148716375ca118 # v6.0.0
+        with:
+          failOnError: false
+          name: |
+            mihon-apks
+            mihon-checksums
+            mihon-foss
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION_NAME: ${{ needs.prepare.outputs.version_name }}
+          VERSION_CODE: ${{ needs.prepare.outputs.version_code }}
+          INPUT_DRAFT: ${{ inputs.draft }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+          # push tag 触发时默认不覆盖，避免误删刚推上去的 tag
+          INPUT_OVERWRITE: ${{ github.event_name == 'workflow_dispatch' && inputs.overwrite || 'false' }}
+        run: |
+          set -e
+          flags=()
+          [ "$INPUT_DRAFT" = "true" ] && flags+=(--draft)
+          [ "$INPUT_PRERELEASE" = "true" ] && flags+=(--prerelease)
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            if [ "$INPUT_OVERWRITE" != "true" ]; then
+              echo "::error::Release $TAG already exists and overwrite is disabled"
+              exit 1
+            fi
+            gh release delete "$TAG" --yes --cleanup-tag
+          fi
+
+          cat > notes.md <<EOF
+          Mihon $TAG (versionName $VERSION_NAME, versionCode $VERSION_CODE)
+
+          > [!WARNING]
+          > 这些 APK 使用**测试（debug）签名 key** 签名，与官方发布的正式签名不同。
+          > 安装前需要先卸载官方签名的版本，否则会因签名不一致而安装失败。
+
+          > [!TIP]
+          > 不确定下载哪个就选 \`mihon-$TAG.apk\`（universal，全 ABI 通用）。
+
+          - \`mihon-$TAG.apk\` — universal
+          - \`mihon-arm64-v8a-$TAG.apk\` / \`mihon-armeabi-v7a-$TAG.apk\` / \`mihon-x86-$TAG.apk\` / \`mihon-x86_64-$TAG.apk\` — 按 ABI 拆分
+          - \`mihon-$TAG-foss.apk\` — FOSS 变体（无 telemetry），包名后缀 \`.foss\`
+          EOF
+          sed -i 's/^          //' notes.md
+
+          shopt -s nullglob
+          files=(mihon-*.apk sha256-*.txt)
+          gh release create "$TAG" --title "Mihon $TAG" --notes-file notes.md "${flags[@]}" "${files[@]}"
+          gh release view "$TAG"
