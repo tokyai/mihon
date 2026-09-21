@@ -3,6 +3,7 @@ package eu.kanade.tachiyomi.data.backup.restore.restorers
 import app.cash.sqldelight.async.coroutines.awaitAsList
 import app.cash.sqldelight.async.coroutines.awaitAsOne
 import app.cash.sqldelight.async.coroutines.awaitAsOneOrNull
+import dev.zacsweers.metro.Inject
 import eu.kanade.domain.manga.interactor.UpdateManga
 import eu.kanade.tachiyomi.data.backup.models.BackupCategory
 import eu.kanade.tachiyomi.data.backup.models.BackupChapter
@@ -12,8 +13,6 @@ import eu.kanade.tachiyomi.data.backup.models.BackupTracking
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import tachiyomi.data.Database
-import tachiyomi.data.MemoColumnAdapter
-import tachiyomi.data.UpdateStrategyColumnAdapter
 import tachiyomi.domain.category.interactor.GetCategories
 import tachiyomi.domain.chapter.interactor.GetChaptersByMangaId
 import tachiyomi.domain.chapter.model.Chapter
@@ -23,21 +22,20 @@ import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.track.interactor.GetTracks
 import tachiyomi.domain.track.interactor.InsertTrack
 import tachiyomi.domain.track.model.Track
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import java.util.Date
 import kotlin.math.max
 import kotlin.time.Clock
 
+@Inject
 class MangaRestorer(
-    private val database: Database = Injekt.get(),
-    private val getCategories: GetCategories = Injekt.get(),
-    private val getMangaByUrlAndSourceId: GetMangaByUrlAndSourceId = Injekt.get(),
-    private val getChaptersByMangaId: GetChaptersByMangaId = Injekt.get(),
-    private val updateManga: UpdateManga = Injekt.get(),
-    private val getTracks: GetTracks = Injekt.get(),
-    private val insertTrack: InsertTrack = Injekt.get(),
-    fetchInterval: FetchInterval = Injekt.get(),
+    private val database: Database,
+    private val getCategories: GetCategories,
+    private val getMangaByUrlAndSourceId: GetMangaByUrlAndSourceId,
+    private val getChaptersByMangaId: GetChaptersByMangaId,
+    private val updateManga: UpdateManga,
+    private val getTracks: GetTracks,
+    private val insertTrack: InsertTrack,
+    fetchInterval: FetchInterval,
 ) {
 
     private val timeZone = TimeZone.currentSystemDefault()
@@ -115,7 +113,7 @@ class MangaRestorer(
             artist = manga.artist,
             author = manga.author,
             description = manga.description,
-            genre = manga.genre?.joinToString(separator = ", "),
+            genre = manga.genre,
             title = manga.title,
             status = manga.status,
             thumbnailUrl = manga.thumbnailUrl,
@@ -129,11 +127,11 @@ class MangaRestorer(
             coverLastModified = manga.coverLastModified,
             dateAdded = manga.dateAdded,
             mangaId = manga.id,
-            updateStrategy = manga.updateStrategy.let(UpdateStrategyColumnAdapter::encode),
+            updateStrategy = manga.updateStrategy,
             version = manga.version,
             isSyncing = 1,
             notes = manga.notes,
-            memo = manga.memo.let(MemoColumnAdapter::encode),
+            memo = manga.memo,
         )
         return manga
     }
@@ -231,7 +229,7 @@ class MangaRestorer(
                     chapterId = chapter.id,
                     version = chapter.version,
                     isSyncing = 0,
-                    memo = chapter.memo.let(MemoColumnAdapter::encode),
+                    memo = chapter.memo,
                 )
             }
         }
