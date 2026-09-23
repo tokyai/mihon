@@ -38,6 +38,12 @@ Discover and read manga, webtoons, comics, and more – easier than ever on your
 
 </div>
 
+## Manual builds
+
+GitHub Actions in this repository run only when manually dispatched. Pushes, pull requests, tags, and release changes do not start workflows.
+
+To package APKs, open **Actions → Build & Release (Test Key) → Run workflow**. The optional `tag` defaults to `v<versionName>-<short commit>`; the APKs use a test signing key. The upstream **Release** workflow still requires its original repository and signing secrets, plus an existing release `tag` to build.
+
 ## Contributing
 
 [Code of conduct](./CODE_OF_CONDUCT.md) · [Contributing guide](./CONTRIBUTING.md)

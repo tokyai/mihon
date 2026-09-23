@@ -1,8 +1,11 @@
 name: Release
 on:
-  push:
-    tags:
-      - v*
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to build (for example, v0.20.4)'
+        required: true
+        type: string
 
 env:
   MIHON_GITHUB_RELEASE: true
@@ -22,7 +25,9 @@ jobs:
     steps:
       - name: Get tag name
         id: extract
-        run: echo "tag=${GITHUB_REF/refs\/tags\//}" >> $GITHUB_OUTPUT
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
   build:
     if: github.repository == 'mihonapp/mihon'
@@ -33,6 +38,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag }}
 
       - name: Set up JDK
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -88,6 +95,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag }}
 
       - name: Set up JDK
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1

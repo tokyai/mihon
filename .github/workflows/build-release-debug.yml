@@ -32,9 +32,6 @@ on:
         required: false
         default: true
         type: boolean
-  push:
-    tags:
-      - 'v*'
 
 permissions:
   contents: write
@@ -67,15 +64,11 @@ jobs:
         id: meta
         env:
           INPUT_TAG: ${{ inputs.tag }}
-          EVENT_NAME: ${{ github.event_name }}
-          GITHUB_REF_NAME: ${{ github.ref_name }}
         run: |
           set -e
           version_name=$(grep -m1 'versionName = ' app/build.gradle.kts | sed -E 's/.*"(.*)".*/\1/')
           version_code=$(grep -m1 'versionCode = ' app/build.gradle.kts | grep -oE '[0-9]+')
-          if [ "$EVENT_NAME" = "push" ]; then
-            tag="$GITHUB_REF_NAME"
-          elif [ -n "$INPUT_TAG" ]; then
+          if [ -n "$INPUT_TAG" ]; then
             tag="$INPUT_TAG"
           else
             tag="v${version_name}-$(git rev-parse --short HEAD)"
@@ -165,7 +158,7 @@ jobs:
     name: Build FOSS APK
     runs-on: ubuntu-latest
     needs: prepare
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_foss }}
+    if: ${{ inputs.build_foss }}
 
     steps:
       - name: Checkout
@@ -250,8 +243,7 @@ jobs:
           VERSION_CODE: ${{ needs.prepare.outputs.version_code }}
           INPUT_DRAFT: ${{ inputs.draft }}
           INPUT_PRERELEASE: ${{ inputs.prerelease }}
-          # push tag 触发时默认不覆盖，避免误删刚推上去的 tag
-          INPUT_OVERWRITE: ${{ github.event_name == 'workflow_dispatch' && inputs.overwrite || 'false' }}
+          INPUT_OVERWRITE: ${{ inputs.overwrite }}
         run: |
           set -e
           flags=()
